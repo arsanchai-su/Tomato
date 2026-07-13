@@ -160,39 +160,73 @@ class Evaluator:
 
         return results
 
+    def _print_aggregated(self, label, aggregated):
+        print(f"\n{'='*60}")
+        print(f"Aggregated {label} Results ({aggregated['_num_folds']} folds)")
+        print(f"{'='*60}")
+        for metric in ("accuracy", "precision", "recall", "f1"):
+            if metric in aggregated:
+                vals = aggregated[metric]
+                print(f"  {metric}: {vals['mean']:.4f} ± {vals['std']:.4f}")
+
     def evaluate_all_folds(self, folds, test_loader, fold_loaders=None):
-        all_fold_metrics = []
+        all_train_metrics = []
+        all_val_metrics = []
+        all_test_metrics = []
         all_inference_times = []
 
         for fold in folds:
             train_loader = fold_loaders[fold]["train"] if fold_loaders else None
             val_loader = fold_loaders[fold]["val"] if fold_loaders else None
             results = self.evaluate_fold(fold, test_loader, train_loader, val_loader)
-            all_fold_metrics.append(results["test"])
+            all_test_metrics.append(results["test"])
             all_inference_times.extend(results["inference_times"])
+            if "train" in results:
+                all_train_metrics.append(results["train"])
+            if "val" in results:
+                all_val_metrics.append(results["val"])
 
-        aggregated = aggregate_fold_metrics(all_fold_metrics)
+        aggregated_all = {}
 
-        print(f"\n{'='*60}")
-        print(f"Aggregated Test Results ({len(folds)} folds)")
-        print(f"{'='*60}")
-        for metric, vals in aggregated.items():
-            print(f"  {metric}: {vals['mean']:.4f} ± {vals['std']:.4f}")
+        if all_train_metrics:
+            agg_train = aggregate_fold_metrics(all_train_metrics)
+            agg_train["_num_folds"] = len(folds)
+            aggregated_all["train"] = agg_train
+            self._print_aggregated("Train", agg_train)
+
+        if all_val_metrics:
+            agg_val = aggregate_fold_metrics(all_val_metrics)
+            agg_val["_num_folds"] = len(folds)
+            aggregated_all["val"] = agg_val
+            self._print_aggregated("Val", agg_val)
+
+        agg_test = aggregate_fold_metrics(all_test_metrics)
+        agg_test["_num_folds"] = len(folds)
+        aggregated_all["test"] = agg_test
+        self._print_aggregated("Test", agg_test)
 
         avg_inf = np.mean(all_inference_times)
         std_inf = np.std(all_inference_times, ddof=1)
         print(f"  Inference time (per image): {avg_inf*1000:.4f} ± {std_inf*1000:.4f} ms")
 
         # Save aggregated log
-        log_lines = [
-            f"{'='*60}",
-            f"Aggregated Test Results ({len(folds)} folds)",
-            f"{'='*60}",
-        ]
-        log_data = {"model": self.config.save_name, "num_folds": len(folds), "metrics": {}}
-        for metric, vals in aggregated.items():
-            log_lines.append(f"  {metric}: {vals['mean']:.4f} ± {vals['std']:.4f}")
-            log_data["metrics"][metric] = {"mean": round(vals["mean"], 4), "std": round(vals["std"], 4)}
+        log_lines = []
+        log_data = {"model": self.config.save_name, "num_folds": len(folds)}
+
+        for split, label in [("train", "Train"), ("val", "Val"), ("test", "Test")]:
+            if split not in aggregated_all:
+                continue
+            agg = aggregated_all[split]
+            log_lines.append(f"{'='*60}")
+            log_lines.append(f"Aggregated {label} Results ({len(folds)} folds)")
+            log_lines.append(f"{'='*60}")
+            log_data[split] = {}
+            for metric in ("accuracy", "precision", "recall", "f1"):
+                if metric in agg:
+                    vals = agg[metric]
+                    log_lines.append(f"  {metric}: {vals['mean']:.4f} ± {vals['std']:.4f}")
+                    log_data[split][metric] = {"mean": round(vals["mean"], 4), "std": round(vals["std"], 4)}
+
         log_lines.append(f"  Inference time (per image): {avg_inf*1000:.4f} ± {std_inf*1000:.4f} ms")
         log_data["inference_time"] = {"mean_ms": round(avg_inf * 1000, 4), "std_ms": round(std_inf * 1000, 4)}
 
@@ -206,4 +240,4 @@ class Evaluator:
 
         print(f"  Aggregated eval log saved to {txt_path}")
 
-        return aggregated
+        return aggregated_all
